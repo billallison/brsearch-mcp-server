@@ -1,0 +1,17 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run MCP Server",
+			"type": "shell",
+			"command": "uv",
+			"args": [
+				"run",
+				"url-text-fetcher"
+			],
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		}
+	]
+}

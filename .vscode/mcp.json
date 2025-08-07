@@ -1,0 +1,16 @@
+{
+  "servers": {
+    "url-text-fetcher": {
+      "type": "stdio",
+      "command": "/Users/wallison/.local/bin/uv",
+      "args": [
+        "run",
+        "url-text-fetcher"
+      ],
+      "cwd": "/Users/wallison/TechProjects/mcp-server",
+      "env": {
+        "BRAVE_API_KEY": "${BRAVE_API_KEY}"
+      }
+    }
+  }
+}

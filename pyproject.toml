@@ -1,0 +1,21 @@
+[project]
+name = "url-text-fetcher"
+version = "0.1.0"
+description = "FastMCP server for URL text fetching and web scraping"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [ 
+    "mcp>=1.12.3",
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+]
+[[project.authors]]
+name = "William Allison"
+email = "bill@allisonfamily.org"
+
+[build-system]
+requires = [ "uv_build>=0.8.4,<0.9.0",]
+build-backend = "uv_build"
+
+[project.scripts]
+url-text-fetcher = "url_text_fetcher:main"
