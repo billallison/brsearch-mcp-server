@@ -44,9 +44,23 @@ def get_int_env(key: str, default: int) -> int:
 
 # Environment configuration
 BRAVE_API_KEY = os.getenv('BRAVE_API_KEY', '')
+BRAVE_RATE_LIMIT_RPS = get_int_env('BRAVE_RATE_LIMIT_RPS', 1)  # Default to free tier
 REQUEST_TIMEOUT = get_int_env('REQUEST_TIMEOUT', 10)
 CONTENT_LENGTH_LIMIT = get_int_env('CONTENT_LENGTH_LIMIT', 5000)
 MAX_RESPONSE_SIZE = get_int_env('MAX_RESPONSE_SIZE', 10485760)  # 10MB default
+
+# Validate rate limit configuration
+if BRAVE_RATE_LIMIT_RPS < 1:
+    logger.warning(f"Invalid BRAVE_RATE_LIMIT_RPS ({BRAVE_RATE_LIMIT_RPS}), using default: 1")
+    BRAVE_RATE_LIMIT_RPS = 1
+elif BRAVE_RATE_LIMIT_RPS > 50:
+    logger.warning(f"Rate limit ({BRAVE_RATE_LIMIT_RPS}) exceeds maximum tier (50), capping at 50")
+    BRAVE_RATE_LIMIT_RPS = 50
+
+# Calculate minimum interval between requests (in seconds)
+MIN_REQUEST_INTERVAL = 1.0 / BRAVE_RATE_LIMIT_RPS
+
+logger.info(f"Brave Search rate limit configured: {BRAVE_RATE_LIMIT_RPS} requests/second (interval: {MIN_REQUEST_INTERVAL:.3f}s)")
 
 # Standard HTTP headers for requests
 HEADERS = {
@@ -296,13 +310,13 @@ def brave_search(query: str, count: int = 10) -> List[dict]:
         logger.error("Brave Search API key not configured")
         raise ValueError("BRAVE_API_KEY environment variable is required")
     
-    # Thread-safe rate limiting: ensure at least 1 second between requests
+    # Thread-safe rate limiting: ensure minimum interval between requests
     with rate_limit_lock:
         current_time = time.time()
         time_since_last_request = current_time - last_brave_request[0]
-        if time_since_last_request < 1.0:
-            sleep_time = 1.0 - time_since_last_request
-            logger.info(f"Rate limiting: sleeping for {sleep_time:.2f} seconds...")
+        if time_since_last_request < MIN_REQUEST_INTERVAL:
+            sleep_time = MIN_REQUEST_INTERVAL - time_since_last_request
+            logger.info(f"Rate limiting: sleeping for {sleep_time:.3f} seconds (limit: {BRAVE_RATE_LIMIT_RPS} req/s)")
             time.sleep(sleep_time)
         last_brave_request[0] = time.time()
     
@@ -388,7 +402,7 @@ async def handle_list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="brave_search_and_fetch",
-            description="Search the web using Brave Search and automatically fetch content from the top results. Respects API rate limits (1 request per second).",
+            description=f"Search the web using Brave Search and automatically fetch content from the top results. Respects API rate limits ({BRAVE_RATE_LIMIT_RPS} requests per second).",
             inputSchema={
                 "type": "object",
                 "properties": {

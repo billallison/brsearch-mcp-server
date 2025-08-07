@@ -126,12 +126,32 @@ The server can be configured via the `.env` file:
 # Required: Brave Search API Key
 BRAVE_API_KEY=your_api_key_here
 
+# Brave Search API Rate Limit (requests per second)
+# Free tier: 1 request per second (default)
+# Paid tier: 20 requests per second  
+# Higher tier: 50 requests per second
+# Set this to match your subscription level
+BRAVE_RATE_LIMIT_RPS=1
+
 # Optional: Request timeout in seconds (default: 10)
 REQUEST_TIMEOUT=10
 
 # Optional: Content length limit in characters (default: 5000)
 CONTENT_LENGTH_LIMIT=5000
+
+# Optional: Maximum response size in bytes (default: 10MB)
+MAX_RESPONSE_SIZE=10485760
 ```
+
+### Brave Search Subscription Tiers
+
+The server automatically adjusts its rate limiting based on your Brave Search subscription:
+
+- **Free Tier**: 1 request per second (`BRAVE_RATE_LIMIT_RPS=1`)
+- **Paid Tier**: 20 requests per second (`BRAVE_RATE_LIMIT_RPS=20`)
+- **Higher Tier**: 50 requests per second (`BRAVE_RATE_LIMIT_RPS=50`)
+
+The server will enforce the configured rate limit across all concurrent requests to ensure you stay within your API quota.
 
 See `.env.example` for a template.
 
