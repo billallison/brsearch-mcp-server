@@ -261,7 +261,8 @@ def brave_search(query: str, count: int = 10) -> List[dict]:
     
     url = "https://api.search.brave.com/res/v1/web/search"
     headers = {
-        **HEADERS,
+        'User-Agent': 'Mozilla/5.0 (compatible; MCP-URL-Fetcher/1.0)',
+        'Accept': 'application/json',  # Brave API requires application/json or */*
         "X-Subscription-Token": BRAVE_API_KEY
     }
     params = {
@@ -274,10 +275,6 @@ def brave_search(query: str, count: int = 10) -> List[dict]:
     
     try:
         logger.info(f"SEARCH_REQUEST: Making Brave Search for '{query}' (count={count})")
-        logger.debug(f"API URL: {url}")
-        logger.debug(f"Request params: {params}")
-        logger.debug(f"API Key present: {'Yes' if BRAVE_API_KEY else 'No'}, length: {len(BRAVE_API_KEY) if BRAVE_API_KEY else 0}")
-        
         response = requests.get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT)
         
         # Log response details for debugging
@@ -285,9 +282,6 @@ def brave_search(query: str, count: int = 10) -> List[dict]:
         
         response.raise_for_status()
         data = response.json()
-        
-        # Log the response structure for debugging
-        logger.debug(f"Response keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
         
         results = []
         if 'web' in data and 'results' in data['web']:
@@ -527,9 +521,10 @@ async def brave_search_and_fetch(query: str, max_results: int = 3) -> str:
         return final_response
         
     except Exception as e:
-        logger.error(f"Search operation failed: {e}", exc_info=True)
-        # Don't leak internal error details
-        return "Error: Search operation failed"
+        error_msg = str(e)
+        logger.error(f"Search operation failed: {error_msg}", exc_info=True)
+        # Return more detailed error information for debugging
+        return f"Error: Search operation failed - {error_msg}"
 
 def main():
     """Main entry point for the FastMCP server."""
