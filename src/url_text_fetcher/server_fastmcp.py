@@ -1,6 +1,13 @@
+"""
+MCP Server for URL Text Fetching and Web Search - FastMCP Implementation
+
+This implementation follows MCP best practices using FastMCP patterns.
+"""
+
 import asyncio
 import requests
 from bs4 import BeautifulSoup
+from typing import List, Dict, Any
 import os
 from pathlib import Path
 import time
@@ -8,20 +15,18 @@ import threading
 import logging
 from urllib.parse import urlparse
 import ipaddress
-from typing import List
+import sys
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Context
+from pydantic import Field
 
-# Setup logging to stderr (not stdout for MCP compliance)
+# Configure logging to stderr only (never stdout for stdio servers)
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
+    stream=sys.stderr,  # Explicitly use stderr to comply with MCP requirements
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-# Initialize FastMCP server
-mcp = FastMCP("url-text-fetcher")
 
 # Load environment variables from .env file if it exists
 def load_env():
@@ -80,8 +85,13 @@ HEADERS = {
 rate_limit_lock = threading.Lock()
 last_brave_request = [0]  # Using list for mutable reference
 
+# Create FastMCP server instance
+mcp = FastMCP("url-text-fetcher")
+
 def sanitize_query(query: str) -> str:
-    """Sanitize search query to prevent injection attacks and malformed requests."""
+    """
+    Sanitize search query to prevent injection attacks and malformed requests.
+    """
     if not query or not isinstance(query, str):
         return ""
     
@@ -105,7 +115,9 @@ def sanitize_query(query: str) -> str:
     return query.strip()
 
 def sanitize_url(url: str) -> str:
-    """Basic URL sanitization and normalization."""
+    """
+    Basic URL sanitization and normalization.
+    """
     if not url or not isinstance(url, str):
         return ""
     
@@ -122,7 +134,9 @@ def sanitize_url(url: str) -> str:
     return url
 
 def is_safe_url(url: str) -> bool:
-    """Validate URL is safe to fetch - prevents SSRF attacks."""
+    """
+    Validate URL is safe to fetch - prevents SSRF attacks.
+    """
     try:
         parsed = urlparse(url)
         
@@ -156,7 +170,8 @@ def is_safe_url(url: str) -> bool:
                 
         except socket.gaierror:
             # DNS resolution failed - domain doesn't exist or network issue
-            # For safety in production, we should block unknown domains
+            # For legitimate domains, this could be a temporary DNS issue
+            # But for safety in production, we should block unknown domains
             return False
         except ValueError:
             # Invalid IP address format
@@ -169,7 +184,10 @@ def is_safe_url(url: str) -> bool:
         return False
 
 def fetch_url_content(url: str) -> str:
-    """Helper function to fetch text content from a URL with safety checks."""
+    """
+    Helper function to fetch text content from a URL with safety checks.
+    Returns the text content or an error message.
+    """
     # Validate URL safety first
     if not is_safe_url(url):
         logger.warning(f"SECURITY: Blocked unsafe URL: {url}")
@@ -236,7 +254,10 @@ def fetch_url_content(url: str) -> str:
         return "Error: An unexpected error occurred while processing the URL"
 
 def brave_search(query: str, count: int = 10) -> List[dict]:
-    """Perform a Brave search and return results with thread-safe rate limiting."""
+    """
+    Perform a Brave search and return results.
+    Respects the configurable request rate limit with thread safety.
+    """
     if not BRAVE_API_KEY:
         logger.error("Brave Search API key not configured")
         raise ValueError("BRAVE_API_KEY environment variable is required")
@@ -296,13 +317,11 @@ def brave_search(query: str, count: int = 10) -> List[dict]:
         logger.error(f"Unexpected error in brave_search: {e}", exc_info=True)
         raise Exception("An unexpected error occurred during search")
 
+# MCP Tools using FastMCP decorators
+
 @mcp.tool()
-async def fetch_url_text(url: str) -> str:
-    """Download all visible text from a URL.
-    
-    Args:
-        url: The URL to fetch text from
-    """
+def fetch_url_text(url: str = Field(description="The URL to fetch text from")) -> str:
+    """Download all visible text from a URL"""
     # Sanitize URL input
     url = sanitize_url(url)
     if not url:
@@ -314,12 +333,8 @@ async def fetch_url_text(url: str) -> str:
     return f"Text content from {url}:\n\n{content}"
 
 @mcp.tool()
-async def fetch_page_links(url: str) -> str:
-    """Return a list of all links on the page.
-    
-    Args:
-        url: The URL to fetch links from
-    """
+def fetch_page_links(url: str = Field(description="The URL to fetch links from")) -> str:
+    """Return a list of all links on the page"""
     # Sanitize URL input
     url = sanitize_url(url)
     if not url:
@@ -360,7 +375,7 @@ async def fetch_page_links(url: str) -> str:
         for link in links:
             if link.startswith(('http://', 'https://', '/')):
                 valid_links.append(link)
-        
+
         links_text = "\n".join(f"- {link}" for link in valid_links[:100])  # Limit to 100 links
         
         return f"Links found on {url} ({len(valid_links)} total, showing first 100):\n\n{links_text}"
@@ -373,13 +388,21 @@ async def fetch_page_links(url: str) -> str:
         return "Error: Unable to process page"
 
 @mcp.tool()
-async def brave_search_and_fetch(query: str, max_results: int = 3) -> str:
-    """Search the web using Brave Search and automatically fetch content from the top results.
+async def brave_search_and_fetch(
+    ctx: Context,
+    query: str = Field(description="The search query"),
+    max_results: int = Field(
+        default=3,
+        description="Maximum number of results to fetch content for",
+        ge=1,
+        le=10
+    )
+) -> str:
+    """Search the web using Brave Search and automatically fetch content from the top results"""
     
-    Args:
-        query: The search query
-        max_results: Maximum number of results to fetch content for (default: 3, max: 10)
-    """
+    # Use context for logging
+    await ctx.info(f"Starting search for: {query}")
+    
     # Sanitize query input
     query = sanitize_query(query)
     if not query:
@@ -388,7 +411,7 @@ async def brave_search_and_fetch(query: str, max_results: int = 3) -> str:
     max_results = max(1, min(10, max_results))  # Clamp between 1-10
     
     try:
-        logger.info(f"Performing Brave search: {query}")
+        await ctx.info(f"Performing Brave search: {query}")
         search_results = brave_search(query, count=max_results * 2)
         
         if not search_results:
@@ -410,6 +433,14 @@ async def brave_search_and_fetch(query: str, max_results: int = 3) -> str:
             response_parts.append(f"   URL: {url}")
             response_parts.append(f"   Description: {description}")
             
+            # Report progress
+            progress = (fetched_count + 1) / max_results
+            await ctx.report_progress(
+                progress=progress,
+                total=1.0,
+                message=f"Fetching content from result {fetched_count + 1} of {max_results}"
+            )
+            
             # Fetch content from this URL
             if url:
                 content = fetch_url_content(url)
@@ -430,17 +461,19 @@ async def brave_search_and_fetch(query: str, max_results: int = 3) -> str:
         if len(final_response) > CONTENT_LENGTH_LIMIT:
             final_response = final_response[:CONTENT_LENGTH_LIMIT] + "... [Response truncated]"
         
+        await ctx.info(f"Search completed successfully: {fetched_count} results fetched")
         return final_response
         
     except Exception as e:
+        await ctx.error(f"Search operation failed: {str(e)}")
         logger.error(f"Search operation failed: {e}", exc_info=True)
         # Don't leak internal error details
         return "Error: Search operation failed"
 
 def main():
-    """Main entry point for the FastMCP server."""
-    mcp.run(transport='stdio')
+    """Entry point for the FastMCP server."""
+    logger.info("Starting URL Text Fetcher MCP Server (FastMCP)")
+    mcp.run()
 
 if __name__ == "__main__":
-    # Run FastMCP server
     main()

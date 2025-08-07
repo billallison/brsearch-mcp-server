@@ -1,6 +1,14 @@
 # URL Text Fetcher MCP Server
 
-A Model Context Protocol (MCP) server that provides URL text fetching, web scraping, and web search capabilities for use with LM Studio and other MCP-compatible clients.
+A modern Model Context Protocol (MCP) server that provides URL text fetching, web scraping, and web search capabilities using the FastMCP framework for use with LM Studio and other MCP-compatible clients.
+
+The server is built using the modern FastMCP framework, which provides:
+- Clean decorator-based tool definitions
+- Automatic schema generation from type hints
+- Simplified server setup and configuration
+- Better error handling and logging
+
+All security features and functionality have been preserved while modernizing to follow MCP best practices.
 
 ## Features
 
@@ -9,6 +17,15 @@ This MCP server enables AI models to:
 - **Extract links** from web pages to discover related resources
 - **Search the web** using Brave Search and automatically fetch content from top results
 - **Handle errors gracefully** with proper timeout and exception handling
+
+## Security Features
+
+Enterprise-grade security implementation:
+- **SSRF Protection**: Blocks requests to internal networks and metadata endpoints
+- **Input Sanitization**: Validates and cleans all URL and query inputs
+- **Memory Protection**: Content size limits prevent memory exhaustion
+- **Rate Limiting**: Thread-safe API rate limiting with configurable thresholds
+- **Error Handling**: Comprehensive exception handling without information leakage
 
 ## Tools
 
@@ -66,9 +83,12 @@ To use the search functionality, you'll need a free Brave Search API key:
 
 1. Open LM Studio and navigate to the Integrations section
 2. Click "Install" then "Edit mcp.json"
+
+#### FastMCP Implementation (Recommended)
+
 3. **Option A: Use the configuration helper script**
    ```bash
-   ./configure_lmstudio.sh
+   ./configure_lmstudio_fastmcp.sh
    ```
    This will generate the correct configuration with the right paths for your system.
 
@@ -77,15 +97,23 @@ To use the search functionality, you'll need a free Brave Search API key:
 ```json
 {
   "mcpServers": {
-    "url-text-fetcher": {
-      "command": "/Users/wallison/.local/bin/uv",
+    "url-text-fetcher-fastmcp": {
+      "command": "uv",
       "args": [
         "run", 
-        "url-text-fetcher"
+        "url-text-fetcher-fastmcp"
       ],
       "cwd": "/Users/wallison/TechProjects/mcp-server"
     }
   }
+}
+```
+
+#### Legacy Implementation (Low-Level)
+
+For the legacy implementation:
+```bash
+./configure_lmstudio.sh  # Generates config for legacy server
 ```
 
 **Note:** The API key will be automatically loaded from your `.env` file in the project directory.
@@ -98,7 +126,10 @@ To use the search functionality, you'll need a free Brave Search API key:
 You can also run the server directly:
 
 ```bash
-# Make sure your .env file has BRAVE_API_KEY set
+# FastMCP implementation (recommended)
+uv run url-text-fetcher-fastmcp
+
+# Legacy implementation
 uv run url-text-fetcher
 ```
 

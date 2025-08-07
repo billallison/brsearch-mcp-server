@@ -18,4 +18,4 @@ requires = [ "uv_build>=0.8.4,<0.9.0",]
 build-backend = "uv_build"
 
 [project.scripts]
-url-text-fetcher = "url_text_fetcher:main"
+url-text-fetcher = "url_text_fetcher.server:main"
