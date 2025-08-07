@@ -337,6 +337,7 @@ async def get_server_info() -> str:
         "• fetch_url_text - Download visible text from any URL",
         "• fetch_page_links - Extract all links from a webpage", 
         "• brave_search_and_fetch - Search web and fetch content from top results",
+        "• test_brave_search - Test Brave Search API connectivity",
         "• get_server_info - Display this server information",
         "",
         "Security Features:",
