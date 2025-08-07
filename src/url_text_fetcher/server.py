@@ -274,9 +274,20 @@ def brave_search(query: str, count: int = 10) -> List[dict]:
     
     try:
         logger.info(f"SEARCH_REQUEST: Making Brave Search for '{query}' (count={count})")
+        logger.debug(f"API URL: {url}")
+        logger.debug(f"Request params: {params}")
+        logger.debug(f"API Key present: {'Yes' if BRAVE_API_KEY else 'No'}, length: {len(BRAVE_API_KEY) if BRAVE_API_KEY else 0}")
+        
         response = requests.get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT)
+        
+        # Log response details for debugging
+        logger.info(f"SEARCH_RESPONSE: Status {response.status_code}, Content-Type: {response.headers.get('Content-Type', 'unknown')}")
+        
         response.raise_for_status()
         data = response.json()
+        
+        # Log the response structure for debugging
+        logger.debug(f"Response keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
         
         results = []
         if 'web' in data and 'results' in data['web']:
@@ -286,17 +297,25 @@ def brave_search(query: str, count: int = 10) -> List[dict]:
                     'url': result.get('url', ''),
                     'description': result.get('description', ''),
                 })
+        else:
+            logger.warning(f"Unexpected response structure: {data}")
         
         logger.info(f"SEARCH_SUCCESS: Found {len(results)} results for '{query}'")
         return results
     except requests.HTTPError as e:
-        logger.error(f"Brave Search API error: {e.response.status_code} - {e.response.text}")
-        if e.response.status_code == 422:
+        logger.error(f"Brave Search API error: {e.response.status_code}")
+        logger.error(f"Response headers: {dict(e.response.headers)}")
+        logger.error(f"Response body: {e.response.text}")
+        if e.response.status_code == 401:
+            raise Exception("Invalid or missing API key - check your BRAVE_API_KEY")
+        elif e.response.status_code == 403:
+            raise Exception("API key does not have permission for this endpoint")
+        elif e.response.status_code == 422:
             raise Exception("Search request was rejected - please check your query")
         elif e.response.status_code == 429:
             raise Exception("Rate limit exceeded - please wait before making another request")
         else:
-            raise Exception("Search service temporarily unavailable")
+            raise Exception(f"Search service error: {e.response.status_code} - {e.response.text}")
     except requests.RequestException as e:
         logger.error(f"Network error during search: {e}")
         raise Exception("Network error occurred during search")
@@ -336,6 +355,40 @@ async def get_server_info() -> str:
     ]
     
     return "\n".join(info)
+
+@mcp.tool()
+async def test_brave_search(query: str = "test") -> str:
+    """Test the Brave Search API connection and configuration.
+    
+    Args:
+        query: Test query to search for (default: "test")
+    """
+    if not BRAVE_API_KEY:
+        return "❌ Error: BRAVE_API_KEY environment variable not set"
+    
+    try:
+        logger.info(f"Testing Brave Search API with query: '{query}'")
+        results = brave_search(query, count=1)
+        
+        if results:
+            result = results[0]
+            return f"""✅ Brave Search API Test Successful!
+            
+Query: {query}
+Found: {len(results)} result(s)
+
+First Result:
+Title: {result.get('title', 'No title')}
+URL: {result.get('url', 'No URL')}
+Description: {result.get('description', 'No description')}
+
+API Key: ✓ Valid (length: {len(BRAVE_API_KEY)})
+Rate Limit: {BRAVE_RATE_LIMIT_RPS} requests/second"""
+        else:
+            return f"⚠️ API connection successful but no results found for query: '{query}'"
+            
+    except Exception as e:
+        return f"❌ Brave Search API Test Failed: {str(e)}"
 
 @mcp.tool()
 async def fetch_url_text(url: str) -> str:
