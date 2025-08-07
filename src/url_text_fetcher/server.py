@@ -63,7 +63,100 @@ HEADERS = {
 rate_limit_lock = threading.Lock()
 last_brave_request = [0]  # Using list for mutable reference
 
+def sanitize_query(query: str) -> str:
+    """
+    Sanitize search query to prevent injection attacks and malformed requests.
+    """
+    if not query or not isinstance(query, str):
+        return ""
+    
+    # Remove null bytes and control characters
+    query = ''.join(char for char in query if ord(char) >= 32 or char in '\t\n\r')
+    
+    # Limit query length to prevent abuse
+    max_query_length = 500
+    if len(query) > max_query_length:
+        query = query[:max_query_length]
+        logger.warning(f"Query truncated to {max_query_length} characters")
+    
+    # Remove potentially dangerous patterns
+    dangerous_patterns = ['<script', 'javascript:', 'data:', 'vbscript:']
+    query_lower = query.lower()
+    for pattern in dangerous_patterns:
+        if pattern in query_lower:
+            logger.warning(f"Potentially dangerous pattern detected in query: {pattern}")
+            query = query.replace(pattern, '')
+    
+    return query.strip()
+
+def sanitize_url(url: str) -> str:
+    """
+    Basic URL sanitization and normalization.
+    """
+    if not url or not isinstance(url, str):
+        return ""
+    
+    # Remove whitespace and control characters
+    url = ''.join(char for char in url if ord(char) >= 32 or char in '\t\n\r')
+    url = url.strip()
+    
+    # Ensure URL has protocol
+    if url and not url.startswith(('http://', 'https://')):
+        # Don't auto-add protocol for security reasons
+        logger.warning(f"URL missing protocol: {url}")
+        return ""
+    
+    return url
+
 def is_safe_url(url: str) -> bool:
+    """
+    Validate URL is safe to fetch - prevents SSRF attacks.
+    """
+    try:
+        parsed = urlparse(url)
+        
+        # Only allow http/https
+        if parsed.scheme not in ['http', 'https']:
+            return False
+        
+        hostname = parsed.hostname
+        if not hostname:
+            return False
+            
+        # Block common internal/metadata hostnames
+        blocked_hostnames = [
+            'localhost', 'metadata.google.internal',
+            '169.254.169.254',  # AWS/GCP metadata
+            'metadata'
+        ]
+        
+        if hostname.lower() in blocked_hostnames:
+            return False
+            
+        # Try to resolve hostname to IP to check for internal addresses
+        try:
+            import socket
+            ip = socket.gethostbyname(hostname)
+            ip_obj = ipaddress.ip_address(ip)
+            
+            # Block private/internal IP ranges
+            if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+                return False
+                
+        except socket.gaierror:
+            # DNS resolution failed - domain doesn't exist or network issue
+            # For legitimate domains, this could be a temporary DNS issue
+            # But for safety in production, we should block unknown domains
+            return False
+        except ValueError:
+            # Invalid IP address format
+            return False
+            
+        return True
+        
+    except Exception:
+        # Any other parsing error - block to be safe
+        return False
     """
     Validate URL is safe to fetch - prevents SSRF attacks.
     """
@@ -131,18 +224,24 @@ def fetch_url_content(url: str) -> str:
     """
     # Validate URL safety first
     if not is_safe_url(url):
-        logger.warning(f"Blocked unsafe URL: {url}")
+        logger.warning(f"SECURITY: Blocked unsafe URL: {url}")
         return "Error: URL not allowed for security reasons"
     
     try:
+        # Log request for monitoring
+        logger.info(f"REQUEST: Fetching content from {url}")
+        
         # Make request with streaming to check size
         resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT, stream=True)
         resp.raise_for_status()
         
+        # Log response details
+        logger.info(f"RESPONSE: {resp.status_code} from {url}, Content-Type: {resp.headers.get('Content-Type', 'unknown')}")
+        
         # Check content length header
         content_length = resp.headers.get('Content-Length')
         if content_length and int(content_length) > MAX_RESPONSE_SIZE:
-            logger.warning(f"Content too large: {content_length} bytes for {url}")
+            logger.warning(f"SECURITY: Content too large: {content_length} bytes for {url}")
             return f"Error: Content too large ({content_length} bytes, max {MAX_RESPONSE_SIZE})"
 
         # Read content with size limit
@@ -154,11 +253,12 @@ def fetch_url_content(url: str) -> str:
                 if chunk:  # filter out keep-alive new chunks
                     total_size += len(chunk)
                     if total_size > MAX_RESPONSE_SIZE:
-                        logger.warning(f"Content exceeded size limit for {url}")
+                        logger.warning(f"SECURITY: Content exceeded size limit for {url}")
                         return f"Error: Content exceeded size limit ({MAX_RESPONSE_SIZE} bytes)"
                     content_chunks.append(chunk)
         except UnicodeDecodeError:
             # If we can't decode as text, it's probably binary content
+            logger.warning(f"CONTENT: Unable to decode content as text from {url}")
             return "Error: Unable to decode content as text"
         
         html_content = ''.join(content_chunks)
@@ -174,15 +274,17 @@ def fetch_url_content(url: str) -> str:
         
         # Limit final content length
         if len(text_content) > CONTENT_LENGTH_LIMIT:
+            logger.info(f"CONTENT: Truncating content from {url} ({len(text_content)} -> {CONTENT_LENGTH_LIMIT} chars)")
             text_content = text_content[:CONTENT_LENGTH_LIMIT] + "... [Content truncated]"
-            
+        
+        logger.info(f"SUCCESS: Fetched {len(text_content)} characters from {url}")
         return text_content
         
     except requests.RequestException as e:
-        logger.error(f"Request failed for {url}: {e}")
+        logger.error(f"REQUEST_ERROR: Failed to fetch {url}: {e}")
         return "Error: Unable to fetch URL content"
     except Exception as e:
-        logger.error(f"Unexpected error processing {url}: {e}", exc_info=True)
+        logger.error(f"UNEXPECTED_ERROR: Processing {url}: {e}", exc_info=True)
         return "Error: An unexpected error occurred while processing the URL"
 
 def brave_search(query: str, count: int = 10) -> List[dict]:
@@ -218,7 +320,7 @@ def brave_search(query: str, count: int = 10) -> List[dict]:
     }
     
     try:
-        logger.info(f"Making Brave Search request for: {query}")
+        logger.info(f"SEARCH_REQUEST: Making Brave Search for '{query}' (count={count})")
         response = requests.get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         data = response.json()
@@ -232,6 +334,7 @@ def brave_search(query: str, count: int = 10) -> List[dict]:
                     'description': result.get('description', ''),
                 })
         
+        logger.info(f"SEARCH_SUCCESS: Found {len(results)} results for '{query}'")
         return results
     except requests.HTTPError as e:
         logger.error(f"Brave Search API error: {e.response.status_code} - {e.response.text}")
@@ -322,6 +425,11 @@ async def handle_call_tool(
             url = arguments.get("url")
             if not url:
                 return [types.TextContent(type="text", text="Error: Missing URL parameter")]
+            
+            # Sanitize URL input
+            url = sanitize_url(url)
+            if not url:
+                return [types.TextContent(type="text", text="Error: Invalid URL format")]
                 
             logger.info(f"Fetching URL text: {url}")
             content = fetch_url_content(url)
@@ -335,6 +443,11 @@ async def handle_call_tool(
             url = arguments.get("url")
             if not url:
                 return [types.TextContent(type="text", text="Error: Missing URL parameter")]
+            
+            # Sanitize URL input
+            url = sanitize_url(url)
+            if not url:
+                return [types.TextContent(type="text", text="Error: Invalid URL format")]
             
             # Validate URL safety
             if not is_safe_url(url):
@@ -390,6 +503,11 @@ async def handle_call_tool(
             query = arguments.get("query")
             if not query:
                 return [types.TextContent(type="text", text="Error: Missing search query")]
+            
+            # Sanitize query input
+            query = sanitize_query(query)
+            if not query:
+                return [types.TextContent(type="text", text="Error: Invalid or empty search query")]
             
             max_results = arguments.get("max_results", 3)
             max_results = max(1, min(10, max_results))  # Clamp between 1-10
