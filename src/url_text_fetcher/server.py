@@ -12,6 +12,10 @@ from typing import List
 
 from mcp.server.fastmcp import FastMCP
 
+# Version information
+__version__ = "2.0.0"  # FastMCP modernized version
+__implementation__ = "FastMCP"
+
 # Setup logging to stderr (not stdout for MCP compliance)
 logging.basicConfig(
     level=logging.INFO,
@@ -64,6 +68,10 @@ elif BRAVE_RATE_LIMIT_RPS > 50:
 MIN_REQUEST_INTERVAL = 1.0 / BRAVE_RATE_LIMIT_RPS
 
 logger.info(f"Brave Search rate limit configured: {BRAVE_RATE_LIMIT_RPS} requests/second (interval: {MIN_REQUEST_INTERVAL:.3f}s)")
+
+# Log version information at startup
+logger.info(f"URL Text Fetcher MCP Server v{__version__} ({__implementation__}) starting up")
+logger.info(f"Environment: Python {'.'.join(map(str, __import__('sys').version_info[:2]))}, MCP SDK, Brave Search API")
 
 # Standard HTTP headers for requests
 HEADERS = {
@@ -295,6 +303,39 @@ def brave_search(query: str, count: int = 10) -> List[dict]:
     except Exception as e:
         logger.error(f"Unexpected error in brave_search: {e}", exc_info=True)
         raise Exception("An unexpected error occurred during search")
+
+@mcp.tool()
+async def get_server_info() -> str:
+    """Get information about this MCP server including version, implementation, and capabilities.
+    
+    Returns:
+        Server information including version, implementation type, and available features
+    """
+    info = [
+        f"URL Text Fetcher MCP Server",
+        f"Version: {__version__}",
+        f"Implementation: {__implementation__}",
+        f"Brave Search Rate Limit: {BRAVE_RATE_LIMIT_RPS} requests/second",
+        f"Request Timeout: {REQUEST_TIMEOUT} seconds",
+        f"Content Limit: {CONTENT_LENGTH_LIMIT:,} characters",
+        f"Max Response Size: {MAX_RESPONSE_SIZE:,} bytes",
+        "",
+        "Available Tools:",
+        "• fetch_url_text - Download visible text from any URL",
+        "• fetch_page_links - Extract all links from a webpage", 
+        "• brave_search_and_fetch - Search web and fetch content from top results",
+        "• get_server_info - Display this server information",
+        "",
+        "Security Features:",
+        "• SSRF protection against internal network access",
+        "• Input sanitization for URLs and search queries",
+        "• Content size limiting and memory protection",
+        "• Thread-safe rate limiting for API requests",
+        "",
+        f"Brave API Key: {'✓ Configured' if BRAVE_API_KEY else '✗ Missing'}"
+    ]
+    
+    return "\n".join(info)
 
 @mcp.tool()
 async def fetch_url_text(url: str) -> str:

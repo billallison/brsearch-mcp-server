@@ -1,6 +1,6 @@
 [project]
 name = "url-text-fetcher"
-version = "0.1.0"
+version = "2.0.0"
 description = "FastMCP server for URL text fetching and web scraping"
 readme = "README.md"
 requires-python = ">=3.13"
