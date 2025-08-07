@@ -41,7 +41,11 @@ To use the search functionality, you'll need a free Brave Search API key:
 1. Visit [Brave Search API](https://api.search.brave.com/)
 2. Sign up for a free account (2,000 queries/month, max 1 per second)
 3. Get your API key
-4. Set the environment variable: `export BRAVE_API_KEY=your_api_key_here`
+4. Copy `.env.example` to `.env` and add your API key:
+   ```bash
+   cp .env.example .env
+   # Edit .env and set: BRAVE_API_KEY=your_actual_api_key
+   ```
 
 ## Installation
 
@@ -50,9 +54,10 @@ To use the search functionality, you'll need a free Brave Search API key:
    ```bash
    uv sync --dev --all-extras
    ```
-3. Set your Brave API key:
+3. Configure your environment:
    ```bash
-   export BRAVE_API_KEY=your_api_key_here
+   cp .env.example .env
+   # Edit .env file and set your BRAVE_API_KEY
    ```
 
 ## Usage
@@ -78,13 +83,12 @@ To use the search functionality, you'll need a free Brave Search API key:
         "run", 
         "url-text-fetcher"
       ],
-      "cwd": "/Users/wallison/TechProjects/mcp-server",
-      "env": {
-        "BRAVE_API_KEY": "your_api_key_here"
-      }
+      "cwd": "/Users/wallison/TechProjects/mcp-server"
     }
   }
 ```
+
+**Note:** The API key will be automatically loaded from your `.env` file in the project directory.
 
 5. Save the configuration and restart LM Studio
 6. The server will appear in the Integrations section
@@ -94,8 +98,7 @@ To use the search functionality, you'll need a free Brave Search API key:
 You can also run the server directly:
 
 ```bash
-# Set your API key first
-export BRAVE_API_KEY=your_api_key_here
+# Make sure your .env file has BRAVE_API_KEY set
 uv run url-text-fetcher
 ```
 
@@ -114,6 +117,23 @@ Once configured with LM Studio, you can ask the AI to:
 - `mcp>=1.12.3` - Model Context Protocol framework
 - `requests>=2.31.0` - HTTP library for web requests and Brave Search API
 - `beautifulsoup4>=4.12.0` - HTML parsing and text extraction
+
+## Configuration
+
+The server can be configured via the `.env` file:
+
+```bash
+# Required: Brave Search API Key
+BRAVE_API_KEY=your_api_key_here
+
+# Optional: Request timeout in seconds (default: 10)
+REQUEST_TIMEOUT=10
+
+# Optional: Content length limit in characters (default: 5000)
+CONTENT_LENGTH_LIMIT=5000
+```
+
+See `.env.example` for a template.
 
 ## Development
 
@@ -152,15 +172,21 @@ If you see errors like "Failed to spawn: `url-text-fetcher`" in LM Studio logs:
 
 4. **Check your API key:**
    ```bash
+   # Check if your .env file has the API key set
+   cat .env | grep BRAVE_API_KEY
+   ```
+
+   Or test manually:
+   ```bash
    export BRAVE_API_KEY=your_actual_api_key
    echo $BRAVE_API_KEY  # Should show your key
    ```
 
 ### Common Issues
 
-- **"BRAVE_API_KEY environment variable is required"**: Set your API key as shown above
+- **"BRAVE_API_KEY environment variable is required"**: Make sure your `.env` file contains `BRAVE_API_KEY=your_actual_api_key`
 - **"Network error"**: Check your internet connection and API key validity
-- **"Content truncated"**: Normal behavior for very long web pages (content is limited to 5000 characters)
+- **"Content truncated"**: Normal behavior for very long web pages (content is limited to 5000 characters by default)
 
 ## Error Handling
 

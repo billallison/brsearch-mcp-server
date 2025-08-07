@@ -41,10 +41,7 @@ cat << EOF
         "run", 
         "url-text-fetcher"
       ],
-      "cwd": "$CURRENT_DIR",
-      "env": {
-        "BRAVE_API_KEY": "your_api_key_here"
-      }
+      "cwd": "$CURRENT_DIR"
     }
   }
 }
@@ -53,5 +50,7 @@ EOF
 echo ""
 echo "💡 Don't forget to:"
 echo "   1. Get your Brave Search API key from https://api.search.brave.com/"
-echo "   2. Replace 'your_api_key_here' with your actual API key"
+echo "   2. Copy .env.example to .env and set your BRAVE_API_KEY"
 echo "   3. Restart LM Studio after adding the configuration"
+echo ""
+echo "ℹ️  Note: API key will be loaded automatically from your .env file"
