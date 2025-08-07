@@ -5,12 +5,20 @@ from typing import List
 import os
 from pathlib import Path
 import time
+import threading
+import logging
+from urllib.parse import urlparse
+import ipaddress
 
 from mcp.server.models import InitializationOptions
 import mcp.types as types
 from mcp.server import NotificationOptions, Server
 from pydantic import AnyUrl
 import mcp.server.stdio
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load environment variables from .env file if it exists
 def load_env():
@@ -26,24 +34,137 @@ def load_env():
 
 load_env()
 
-# Configuration from environment variables
-REQUEST_TIMEOUT = int(os.getenv('REQUEST_TIMEOUT', '10'))
-CONTENT_LENGTH_LIMIT = int(os.getenv('CONTENT_LENGTH_LIMIT', '5000'))
+# Configuration from environment variables with validation
+def get_int_env(key: str, default: int) -> int:
+    try:
+        return int(os.getenv(key, str(default)))
+    except ValueError:
+        logger.warning(f"Invalid {key} value, using default: {default}")
+        return default
 
-# Rate limiting for Brave Search API (1 request per second)
-_last_brave_request_time = 0
+# Environment configuration
+BRAVE_API_KEY = os.getenv('BRAVE_API_KEY', '')
+REQUEST_TIMEOUT = get_int_env('REQUEST_TIMEOUT', 10)
+CONTENT_LENGTH_LIMIT = get_int_env('CONTENT_LENGTH_LIMIT', 5000)
+MAX_RESPONSE_SIZE = get_int_env('MAX_RESPONSE_SIZE', 10485760)  # 10MB default
+
+# Standard HTTP headers for requests
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (compatible; MCP-URL-Fetcher/1.0)',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.5',
+    'Accept-Encoding': 'gzip, deflate',
+    'DNT': '1',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1'
+}
+
+# Thread-safe rate limiting for Brave Search API (1 request per second)
+rate_limit_lock = threading.Lock()
+last_brave_request = [0]  # Using list for mutable reference
+
+def is_safe_url(url: str) -> bool:
+    """
+    Validate URL is safe to fetch - prevents SSRF attacks.
+    """
+    try:
+        parsed = urlparse(url)
+        
+        # Only allow http/https
+        if parsed.scheme not in ['http', 'https']:
+            return False
+        
+        hostname = parsed.hostname
+        if not hostname:
+            return False
+            
+        # Block common internal/metadata hostnames
+        blocked_hostnames = [
+            'localhost', 'metadata.google.internal',
+            '169.254.169.254',  # AWS/GCP metadata
+            'metadata'
+        ]
+        
+        if hostname.lower() in blocked_hostnames:
+            return False
+            
+        # Try to resolve hostname to IP to check for internal addresses
+        try:
+            import socket
+            ip = socket.gethostbyname(hostname)
+            ip_obj = ipaddress.ip_address(ip)
+            
+            # Block private/internal IP ranges
+            if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+                return False
+                
+        except socket.gaierror:
+            # DNS resolution failed - domain doesn't exist or network issue
+            # For legitimate domains, this could be a temporary DNS issue
+            # But for safety in production, we should block unknown domains
+            return False
+        except ValueError:
+            # Invalid IP address format
+            return False
+            
+        return True
+        
+    except Exception:
+        # Any other parsing error - block to be safe
+        return False
+        
+        if hostname.lower() in blocked_hostnames:
+            return False
+            
+        return True
+        
+    except Exception as e:
+        logger.warning(f"URL validation error for {url}: {e}")
+        return False
 
 server = Server("url-text-fetcher")
 
 def fetch_url_content(url: str) -> str:
     """
-    Helper function to fetch text content from a URL.
+    Helper function to fetch text content from a URL with safety checks.
     Returns the text content or an error message.
     """
+    # Validate URL safety first
+    if not is_safe_url(url):
+        logger.warning(f"Blocked unsafe URL: {url}")
+        return "Error: URL not allowed for security reasons"
+    
     try:
-        resp = requests.get(url, timeout=REQUEST_TIMEOUT)
+        # Make request with streaming to check size
+        resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT, stream=True)
         resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
+        
+        # Check content length header
+        content_length = resp.headers.get('Content-Length')
+        if content_length and int(content_length) > MAX_RESPONSE_SIZE:
+            logger.warning(f"Content too large: {content_length} bytes for {url}")
+            return f"Error: Content too large ({content_length} bytes, max {MAX_RESPONSE_SIZE})"
+
+        # Read content with size limit
+        content_chunks = []
+        total_size = 0
+        
+        try:
+            for chunk in resp.iter_content(chunk_size=8192, decode_unicode=True):
+                if chunk:  # filter out keep-alive new chunks
+                    total_size += len(chunk)
+                    if total_size > MAX_RESPONSE_SIZE:
+                        logger.warning(f"Content exceeded size limit for {url}")
+                        return f"Error: Content exceeded size limit ({MAX_RESPONSE_SIZE} bytes)"
+                    content_chunks.append(chunk)
+        except UnicodeDecodeError:
+            # If we can't decode as text, it's probably binary content
+            return "Error: Unable to decode content as text"
+        
+        html_content = ''.join(content_chunks)
+        
+        # Parse with BeautifulSoup
+        soup = BeautifulSoup(html_content, "html.parser")
         
         # Remove script and style elements
         for script in soup(["script", "style"]):
@@ -51,40 +172,42 @@ def fetch_url_content(url: str) -> str:
             
         text_content = soup.get_text(separator="\n", strip=True)
         
-        # Limit content length to avoid extremely long responses
+        # Limit final content length
         if len(text_content) > CONTENT_LENGTH_LIMIT:
             text_content = text_content[:CONTENT_LENGTH_LIMIT] + "... [Content truncated]"
             
         return text_content
+        
+    except requests.RequestException as e:
+        logger.error(f"Request failed for {url}: {e}")
+        return "Error: Unable to fetch URL content"
     except Exception as e:
-        return f"Error fetching content: {str(e)}"
+        logger.error(f"Unexpected error processing {url}: {e}", exc_info=True)
+        return "Error: An unexpected error occurred while processing the URL"
 
 def brave_search(query: str, count: int = 10) -> List[dict]:
     """
     Perform a Brave search and return results.
-    Respects the 1 request per second rate limit.
+    Respects the 1 request per second rate limit with thread safety.
     """
-    global _last_brave_request_time
-    
-    api_key = os.getenv('BRAVE_API_KEY')
-    if not api_key:
+    if not BRAVE_API_KEY:
+        logger.error("Brave Search API key not configured")
         raise ValueError("BRAVE_API_KEY environment variable is required")
     
-    # Rate limiting: ensure at least 1 second between requests
-    current_time = time.time()
-    time_since_last_request = current_time - _last_brave_request_time
-    if time_since_last_request < 1.0:
-        sleep_time = 1.0 - time_since_last_request
-        print(f"Rate limiting: sleeping for {sleep_time:.2f} seconds...")
-        time.sleep(sleep_time)
-    
-    _last_brave_request_time = time.time()
+    # Thread-safe rate limiting: ensure at least 1 second between requests
+    with rate_limit_lock:
+        current_time = time.time()
+        time_since_last_request = current_time - last_brave_request[0]
+        if time_since_last_request < 1.0:
+            sleep_time = 1.0 - time_since_last_request
+            logger.info(f"Rate limiting: sleeping for {sleep_time:.2f} seconds...")
+            time.sleep(sleep_time)
+        last_brave_request[0] = time.time()
     
     url = "https://api.search.brave.com/res/v1/web/search"
     headers = {
-        "Accept": "application/json",
-        "Accept-Encoding": "gzip",
-        "X-Subscription-Token": api_key
+        **HEADERS,
+        "X-Subscription-Token": BRAVE_API_KEY
     }
     params = {
         "q": query,
@@ -95,6 +218,7 @@ def brave_search(query: str, count: int = 10) -> List[dict]:
     }
     
     try:
+        logger.info(f"Making Brave Search request for: {query}")
         response = requests.get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         data = response.json()
@@ -110,15 +234,19 @@ def brave_search(query: str, count: int = 10) -> List[dict]:
         
         return results
     except requests.HTTPError as e:
-        # Include response body for better debugging
-        error_detail = ""
-        try:
-            error_detail = f" Response: {e.response.text}"
-        except:
-            pass
-        raise Exception(f"Brave search HTTP error {e.response.status_code}: {e}{error_detail}")
+        logger.error(f"Brave Search API error: {e.response.status_code} - {e.response.text}")
+        if e.response.status_code == 422:
+            raise Exception("Search request was rejected - please check your query")
+        elif e.response.status_code == 429:
+            raise Exception("Rate limit exceeded - please wait before making another request")
+        else:
+            raise Exception("Search service temporarily unavailable")
+    except requests.RequestException as e:
+        logger.error(f"Network error during search: {e}")
+        raise Exception("Network error occurred during search")
     except Exception as e:
-        raise Exception(f"Brave search failed: {str(e)}")
+        logger.error(f"Unexpected error in brave_search: {e}", exc_info=True)
+        raise Exception("An unexpected error occurred during search")
 
 @server.list_tools()
 async def handle_list_tools() -> list[types.Tool]:
@@ -183,125 +311,148 @@ async def handle_call_tool(
     name: str, arguments: dict | None
 ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
     """
-    Handle tool execution requests.
-    Tools can fetch text content or links from web pages, or search and fetch.
+    Handle tool execution requests with enhanced security and error handling.
     """
     if not arguments:
-        raise ValueError("Missing arguments")
+        logger.error(f"Tool {name} called without arguments")
+        return [types.TextContent(type="text", text="Error: Missing arguments")]
 
     try:
         if name == "fetch_url_text":
             url = arguments.get("url")
             if not url:
-                raise ValueError("Missing URL")
+                return [types.TextContent(type="text", text="Error: Missing URL parameter")]
                 
-            # Download all visible text from a URL
-            resp = requests.get(url, timeout=REQUEST_TIMEOUT)
-            resp.raise_for_status()
-            soup = BeautifulSoup(resp.text, "html.parser")
-            text_content = soup.get_text(separator="\n", strip=True)
+            logger.info(f"Fetching URL text: {url}")
+            content = fetch_url_content(url)
             
-            return [
-                types.TextContent(
-                    type="text",
-                    text=f"Text content from {url}:\n\n{text_content}",
-                )
-            ]
+            return [types.TextContent(
+                type="text",
+                text=f"Text content from {url}:\n\n{content}"
+            )]
             
         elif name == "fetch_page_links":
             url = arguments.get("url")
             if not url:
-                raise ValueError("Missing URL")
+                return [types.TextContent(type="text", text="Error: Missing URL parameter")]
+            
+            # Validate URL safety
+            if not is_safe_url(url):
+                logger.warning(f"Blocked unsafe URL for link fetching: {url}")
+                return [types.TextContent(type="text", text="Error: URL not allowed for security reasons")]
                 
-            # Return a list of all links on the page
-            resp = requests.get(url, timeout=REQUEST_TIMEOUT)
-            resp.raise_for_status()
-            soup = BeautifulSoup(resp.text, "html.parser")
-            links = [a.get('href') for a in soup.find_all('a', href=True)]
-            
-            links_text = "\n".join(f"- {link}" for link in links)
-            
-            return [
-                types.TextContent(
+            try:
+                logger.info(f"Fetching page links: {url}")
+                resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT, stream=True)
+                resp.raise_for_status()
+                
+                # Check content length
+                content_length = resp.headers.get('Content-Length')
+                if content_length and int(content_length) > MAX_RESPONSE_SIZE:
+                    return [types.TextContent(type="text", text=f"Error: Page too large ({content_length} bytes)")]
+                
+                # Read content with size limit
+                content_chunks = []
+                total_size = 0
+                
+                for chunk in resp.iter_content(chunk_size=8192, decode_unicode=True):
+                    if chunk:
+                        total_size += len(chunk)
+                        if total_size > MAX_RESPONSE_SIZE:
+                            return [types.TextContent(type="text", text="Error: Page content too large")]
+                        content_chunks.append(chunk)
+                
+                html_content = ''.join(content_chunks)
+                soup = BeautifulSoup(html_content, "html.parser")
+                links = [a.get('href') for a in soup.find_all('a', href=True) if a.get('href')]
+                
+                # Filter and clean links
+                valid_links = []
+                for link in links:
+                    if link.startswith(('http://', 'https://', '/')):
+                        valid_links.append(link)
+                
+                links_text = "\n".join(f"- {link}" for link in valid_links[:100])  # Limit to 100 links
+                
+                return [types.TextContent(
                     type="text",
-                    text=f"Links found on {url}:\n\n{links_text}",
-                )
-            ]
+                    text=f"Links found on {url} ({len(valid_links)} total, showing first 100):\n\n{links_text}"
+                )]
+                
+            except requests.RequestException as e:
+                logger.error(f"Request failed for {url}: {e}")
+                return [types.TextContent(type="text", text="Error: Unable to fetch page")]
+            except Exception as e:
+                logger.error(f"Unexpected error fetching links from {url}: {e}", exc_info=True)
+                return [types.TextContent(type="text", text="Error: Unable to process page")]
             
         elif name == "brave_search_and_fetch":
             query = arguments.get("query")
             if not query:
-                raise ValueError("Missing search query")
-                
+                return [types.TextContent(type="text", text="Error: Missing search query")]
+            
             max_results = arguments.get("max_results", 3)
+            max_results = max(1, min(10, max_results))  # Clamp between 1-10
             
-            # Perform Brave search
-            search_results = brave_search(query, count=max_results * 2)  # Get more results to account for failed fetches
-            
-            if not search_results:
-                return [
-                    types.TextContent(
+            try:
+                logger.info(f"Performing Brave search: {query}")
+                search_results = brave_search(query, count=max_results * 2)
+                
+                if not search_results:
+                    return [types.TextContent(
                         type="text",
-                        text=f"No search results found for query: {query}",
-                    )
-                ]
-            
-            # Build response with search results and content
-            response_parts = [f"Search Results for: {query}\n" + "="*50 + "\n"]
-            
-            fetched_count = 0
-            for i, result in enumerate(search_results):
-                if fetched_count >= max_results:
-                    break
-                    
-                title = result.get('title', 'No title')
-                url = result.get('url', '')
-                description = result.get('description', 'No description')
+                        text=f"No search results found for query: {query}"
+                    )]
                 
-                response_parts.append(f"\n{fetched_count + 1}. {title}")
-                response_parts.append(f"URL: {url}")
-                response_parts.append(f"Description: {description}")
-                response_parts.append("-" * 40)
+                # Build response with search results and content
+                response_parts = [f"Search Results for: {query}", "=" * 50, ""]
                 
-                # Fetch content from this URL
-                if url:
-                    # Add a small delay between content fetches to be respectful to servers
-                    if fetched_count > 0:
-                        time.sleep(0.5)
+                fetched_count = 0
+                for result in search_results:
+                    if fetched_count >= max_results:
+                        break
+                        
+                    title = result.get('title', 'No title')
+                    url = result.get('url', '')
+                    description = result.get('description', 'No description')
                     
-                    content = fetch_url_content(url)
-                    response_parts.append(f"Content:\n{content}")
-                    response_parts.append("=" * 50)
-                    fetched_count += 1
-                else:
-                    response_parts.append("No URL available for content fetching")
-                    response_parts.append("=" * 50)
-            
-            final_response = "\n".join(response_parts)
-            
-            return [
-                types.TextContent(
-                    type="text",
-                    text=final_response,
-                )
-            ]
+                    response_parts.append(f"{fetched_count + 1}. {title}")
+                    response_parts.append(f"   URL: {url}")
+                    response_parts.append(f"   Description: {description}")
+                    
+                    # Fetch content from this URL
+                    if url:
+                        content = fetch_url_content(url)
+                        # Limit content per result
+                        max_content_per_result = CONTENT_LENGTH_LIMIT // max_results
+                        if len(content) > max_content_per_result:
+                            content = content[:max_content_per_result] + "... [Truncated]"
+                        response_parts.append(f"   Content: {content}")
+                        fetched_count += 1
+                    else:
+                        response_parts.append("   Content: No URL available")
+                    
+                    response_parts.append("")  # Add spacing
+                
+                final_response = "\n".join(response_parts)
+                
+                # Final length check
+                if len(final_response) > CONTENT_LENGTH_LIMIT:
+                    final_response = final_response[:CONTENT_LENGTH_LIMIT] + "... [Response truncated]"
+                
+                return [types.TextContent(type="text", text=final_response)]
+                
+            except Exception as e:
+                logger.error(f"Search operation failed: {e}", exc_info=True)
+                # Don't leak internal error details
+                return [types.TextContent(type="text", text="Error: Search operation failed")]
         else:
-            raise ValueError(f"Unknown tool: {name}")
+            logger.error(f"Unknown tool requested: {name}")
+            return [types.TextContent(type="text", text=f"Error: Unknown tool: {name}")]
             
-    except requests.RequestException as e:
-        return [
-            types.TextContent(
-                type="text",
-                text=f"Network error: {str(e)}",
-            )
-        ]
     except Exception as e:
-        return [
-            types.TextContent(
-                type="text",
-                text=f"Error: {str(e)}",
-            )
-        ]
+        logger.error(f"Unexpected error in tool {name}: {e}", exc_info=True)
+        return [types.TextContent(type="text", text="Error: An unexpected error occurred")]
 
 async def main():
     # Run the server using stdin/stdout streams
