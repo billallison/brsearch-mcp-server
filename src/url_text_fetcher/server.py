@@ -4,6 +4,7 @@ from bs4 import BeautifulSoup
 from typing import List
 import os
 from pathlib import Path
+import time
 
 from mcp.server.models import InitializationOptions
 import mcp.types as types
@@ -28,6 +29,9 @@ load_env()
 # Configuration from environment variables
 REQUEST_TIMEOUT = int(os.getenv('REQUEST_TIMEOUT', '10'))
 CONTENT_LENGTH_LIMIT = int(os.getenv('CONTENT_LENGTH_LIMIT', '5000'))
+
+# Rate limiting for Brave Search API (1 request per second)
+_last_brave_request_time = 0
 
 server = Server("url-text-fetcher")
 
@@ -58,10 +62,23 @@ def fetch_url_content(url: str) -> str:
 def brave_search(query: str, count: int = 10) -> List[dict]:
     """
     Perform a Brave search and return results.
+    Respects the 1 request per second rate limit.
     """
+    global _last_brave_request_time
+    
     api_key = os.getenv('BRAVE_API_KEY')
     if not api_key:
         raise ValueError("BRAVE_API_KEY environment variable is required")
+    
+    # Rate limiting: ensure at least 1 second between requests
+    current_time = time.time()
+    time_since_last_request = current_time - _last_brave_request_time
+    if time_since_last_request < 1.0:
+        sleep_time = 1.0 - time_since_last_request
+        print(f"Rate limiting: sleeping for {sleep_time:.2f} seconds...")
+        time.sleep(sleep_time)
+    
+    _last_brave_request_time = time.time()
     
     url = "https://api.search.brave.com/res/v1/web/search"
     headers = {
@@ -92,6 +109,14 @@ def brave_search(query: str, count: int = 10) -> List[dict]:
                 })
         
         return results
+    except requests.HTTPError as e:
+        # Include response body for better debugging
+        error_detail = ""
+        try:
+            error_detail = f" Response: {e.response.text}"
+        except:
+            pass
+        raise Exception(f"Brave search HTTP error {e.response.status_code}: {e}{error_detail}")
     except Exception as e:
         raise Exception(f"Brave search failed: {str(e)}")
 
@@ -132,7 +157,7 @@ async def handle_list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="brave_search_and_fetch",
-            description="Search the web using Brave Search and automatically fetch content from the top results",
+            description="Search the web using Brave Search and automatically fetch content from the top results. Respects API rate limits (1 request per second).",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -240,6 +265,10 @@ async def handle_call_tool(
                 
                 # Fetch content from this URL
                 if url:
+                    # Add a small delay between content fetches to be respectful to servers
+                    if fetched_count > 0:
+                        time.sleep(0.5)
+                    
                     content = fetch_url_content(url)
                     response_parts.append(f"Content:\n{content}")
                     response_parts.append("=" * 50)
