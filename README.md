@@ -2,6 +2,10 @@
 
 A modern Model Context Protocol (MCP) server that provides URL text fetching, web scraping, and web search capabilities using the FastMCP framework for use with LM Studio and other MCP-compatible clients.
 
+<a href="https://glama.ai/mcp/servers/@billallison/brsearch-mcp-server">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@billallison/brsearch-mcp-server/badge" alt="URL Text Fetcher Server MCP server" />
+</a>
+
 The server is built using the modern FastMCP framework, which provides:
 - Clean decorator-based tool definitions
 - Automatic schema generation from type hints
